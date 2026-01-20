@@ -1,4 +1,4 @@
-## 📌 Project Overview
+## Project Overview
 
 This project investigates how **network topology**, **seeding strategies**, and **diffusion mechanisms** influence the spread of information in social media.
 
@@ -6,14 +6,14 @@ Using a real-world **Facebook politician network** from the SNAP dataset, we sim
 
 This work was conducted as part of the **Complex and Social Networks** course at **UPC (Universitat Politècnica de Catalunya)** by me and **Ilaria Boschetto**
 
-## 🎯 Research Questions & Hypotheses
+## Research Questions & Hypotheses
 
 The project tests three core hypotheses:
 1.  **Topology:** Does the structure of real social networks significantly affect diffusion speed compared to random benchmarks (Erdős-Rényi and Degree-Preserving Switching)?
 2.  **Seeding:** Do centrality-based seeding strategies (Degree, Betweenness) outperform random seeding in terms of speed and reach?
 3.  **Models:** Do different diffusion models (ICM, LTM, SIR) produce significantly different outcomes reflecting their underlying mechanisms?
 
-## 🛠 Methodology
+## Methodology
 
 ### 1. Data Source
 We utilized the **Facebook Page-Page network** (specifically the `politician` category) from the [Stanford Network Analysis Project (SNAP)](https://snap.stanford.edu/data/gemsec-Facebook.html).
@@ -36,9 +36,6 @@ We initiated cascades using 1% of nodes selected via:
 * **Random Selection**
 * **Degree Centrality** (Hubs)
 * **Betweenness Centrality** (Bridges)
-
-## 💻 Tech Stack & Implementation
-
 The analysis is performed entirely in **R**. Key implementation details include:
 
 * **Libraries:** `igraph` (network manipulation), `tidyverse` (data cleaning), `ggplot2` (visualization).
