@@ -38,6 +38,7 @@ We initiated cascades using 1% of nodes selected via:
 * **Betweenness Centrality** (Bridges)
 The analysis is performed entirely in **R**. Key implementation details include:
 
+## Implementation
 * **Libraries:** `igraph` (network manipulation), `tidyverse` (data cleaning), `ggplot2` (visualization).
 * **Parallel Computing:** Utilizes `foreach` and `doParallel` to distribute Monte Carlo simulations across CPU cores for efficiency.
 * **Simulations:** 10 independent Monte Carlo replications for every combination of Network $\times$ Model $\times$ Strategy (270 total simulations).
