@@ -1,0 +1,1171 @@
+---
+title: "Information Diffusion in Social Media Networks"
+subtitle: "Complex Social Networks Project"
+author: "Ilaria Boschetto & Gabriele Villa"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: united
+    code_folding: show
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  cache = FALSE
+)
+```
+
+## Importing Libraries
+
+```{r load-libraries}
+required_packages <- c("igraph", "ggplot2", "dplyr", "tidyr", "gridExtra",
+                       "knitr", "scales", "RColorBrewer", "viridis",
+                       "foreach", "doParallel", "parallel")
+
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
+  }
+}
+
+# Set up parallel processing
+n_cores <- parallel::detectCores() - 1  
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+cat("Using", n_cores, "cores for parallel processing\n")
+
+set.seed(42)
+```
+
+# Data Loading and Network Construction
+
+## Load Facebook Networks
+
+```{r load-networks}
+# Function to load a network from edge list
+load_network <- function(file_path) {
+  edges <- read.csv(file_path)
+  g <- graph_from_data_frame(edges, directed = FALSE)
+  g <- simplify(g, remove.multiple = TRUE, remove.loops = TRUE)
+  return(g)
+}
+
+# Load all networks
+network_files <- list(
+  artist = "facebook_clean_data/artist_edges.csv",
+  politician = "facebook_clean_data/politician_edges.csv",
+  athletes = "facebook_clean_data/athletes_edges.csv",
+  company = "facebook_clean_data/company_edges.csv",
+  government = "facebook_clean_data/government_edges.csv",
+  new_sites = "facebook_clean_data/new_sites_edges.csv",
+  public_figure = "facebook_clean_data/public_figure_edges.csv",
+  tvshow = "facebook_clean_data/tvshow_edges.csv"
+)
+
+networks <- list()
+for (name in names(network_files)) {
+  cat("Loading", name, "network...\n")
+  networks[[name]] <- load_network(network_files[[name]])
+}
+
+main_network <- c("politician")
+```
+
+## Network Statistics
+
+```{r network-stats}
+network_stats <- foreach(
+  name = names(networks),
+  .combine = rbind,
+  .packages = "igraph"
+) %dopar% {
+  g <- networks[[name]]
+
+  comps <- components(g)
+  largest_comp <- which.max(comps$csize)
+  g_lcc <- induced_subgraph(g, which(comps$membership == largest_comp))
+
+  data.frame(
+    Network = name,
+    Nodes = vcount(g),
+    Edges = ecount(g),
+    Density = edge_density(g),
+    AvgDegree = mean(degree(g)),
+    AvgClustering = transitivity(g, type = "average"),
+    Diameter = diameter(g_lcc, directed = FALSE),
+    Assortativity = assortativity_degree(g, directed = FALSE),
+    LCC_Size = vcount(g_lcc)
+  )
+}
+
+kable(network_stats, digits = 4, caption = "Facebook Network Statistics")
+```
+
+# Network Analysis 
+
+## Degree Distribution
+
+```{r degree-distribution}
+par(mfrow = c(2, 2))
+# Histogram
+g <- networks[[main_network]]
+deg <- degree(g)
+hist(deg, breaks = 50, main = paste("Degree Distribution -", main_network),
+     xlab = "Degree", col = "skyblue", border = "white")
+
+# Log-log plot
+deg_table <- table(deg)
+x <- as.numeric(names(deg_table))
+y <- as.numeric(deg_table)
+plot(x, y, log = "xy", main = paste("Log-log plot -", main_network),
+     xlab = "Degree (log)", ylab = "Frequency (log)",
+     pch = 16, col = "darkblue")
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+network_viz_dir <- "network_visualizations"
+if (!dir.exists(network_viz_dir)) {
+  dir.create(network_viz_dir)
+}
+
+# Visualize a sample network with different node types
+g <- networks[[main_network]]
+
+# Get largest connected component
+components <- components(g)
+largest_comp <- which.max(components$csize)
+g_viz <- induced_subgraph(g, which(components$membership == largest_comp))
+
+# If still too large, sample
+if (vcount(g_viz) > 500) {
+  set.seed(42)
+  sample_nodes <- sample(1:vcount(g_viz), 500)
+  g_viz <- induced_subgraph(g_viz, sample_nodes)
+}
+
+# Calculate centralities
+deg <- degree(g_viz)
+btw <- betweenness(g_viz, normalized = TRUE)
+
+hub_threshold_deg <- quantile(deg, 0.95)
+hub_threshold_btw <- quantile(btw, 0.95)
+
+is_hub_deg <- deg >= hub_threshold_deg
+is_hub_btw <- btw >= hub_threshold_btw
+
+# Colors and sizes
+base_color <- "grey70"
+hub_color <- "red"
+
+colors_deg <- ifelse(is_hub_deg, hub_color, base_color)
+colors_btw <- ifelse(is_hub_btw, hub_color, base_color)
+
+sizes_deg <- ifelse(is_hub_deg, 6, 3)
+sizes_btw <- ifelse(is_hub_btw, 6, 3)
+
+# Layout
+set.seed(42)
+layout <- layout_with_fr(g_viz)
+
+png(filename = file.path(network_viz_dir, paste0("network_centrality_", main_network, ".png")),
+    width = 14, height = 7, units = "in", res = 300)
+
+par(mfrow = c(1, 2), mar = c(1, 1, 4, 1))
+
+plot(g_viz,
+     layout = layout,
+     vertex.size = sizes_deg,
+     vertex.label = NA,
+     vertex.color = colors_deg,
+     edge.arrow.size = 0.3,
+     edge.color = rgb(0, 0, 0, 0.1),
+     main = paste("Hub Nodes (Degree) -", main_network))
+
+legend("topleft",
+       legend = c("Normal node", "Hub (top 5% degree)"),
+       col = c(base_color, hub_color),
+       pch = 19,
+       pt.cex = c(1.2, 1.8),
+       bty = "n")
+
+plot(g_viz,
+     layout = layout,
+     vertex.size = sizes_btw,
+     vertex.label = NA,
+     vertex.color = colors_btw,
+     edge.arrow.size = 0.3,
+     edge.color = rgb(0, 0, 0, 0.1),
+     main = paste("Hub Nodes (Betweenness) -", main_network))
+
+legend("topleft",
+       legend = c("Normal node", "Hub (top 5% betweenness)"),
+       col = c(base_color, hub_color),
+       pch = 19,
+       pt.cex = c(1.2, 1.8),
+       bty = "n")
+
+dev.off()
+
+par(mfrow = c(1, 1))
+
+cat("\nNetwork visualization saved in", network_viz_dir, "\n")
+
+```
+
+
+
+
+
+# Random Network Benchmarks
+
+## Generate Erdős-Rényi Random Graphs
+
+```{r}
+# Generate Erdős-Rényi graphs with same n and m as real networks (in parallel)
+g_real <- networks[[main_network]]
+n <- vcount(g_real)
+m <- ecount(g_real)
+
+# Calculate probability for ER model
+p <- m / (n * (n - 1) / 2)
+
+# Generate ER graph
+set.seed(42)
+g_er <- erdos.renyi.game(n, p, type = "gnp")
+
+# Store in a list with the network name
+er_networks <- list()
+er_networks[[main_network]] <- g_er
+
+```
+
+## Generate Switching Model (Degree-Preserving) Graphs
+
+```{r generate-switching}
+
+g_real <- networks[[main_network]]
+
+set.seed(42)
+g_switch <- rewire(g_real, keeping_degseq(niter = ecount(g_real) * 10))
+
+switching_networks <- list()
+switching_networks[[main_network]] <- g_switch
+
+```
+
+# Diffusion Models Implementation
+
+## Independent Cascade Model (ICM)
+
+```{r icm-implementation}
+simulate_icm <- function(g, seeds, p = 0.1, max_steps = 168) {
+  n <- vcount(g)
+
+  # Initialize states
+  active <- rep(FALSE, n)
+  active[seeds] <- TRUE
+  newly_active <- seeds
+
+  # Track adoption over time
+  adoption_curve <- numeric(max_steps)
+  adoption_curve[1] <- length(seeds)
+
+  step <- 1
+
+  while (length(newly_active) > 0 && step < max_steps) {
+    step <- step + 1
+    next_active <- c()
+
+  
+    for (u in newly_active) {
+      neighbors <- neighbors(g, u)
+      inactive_neighbors <- neighbors[!active[neighbors]]
+
+      for (v in inactive_neighbors) {
+        if (runif(1) < p) {
+          active[v] <- TRUE
+          next_active <- c(next_active, v)
+        }
+      }
+    }
+
+    newly_active <- unique(next_active)
+    adoption_curve[step] <- sum(active)
+  }
+
+  adoption_curve <- adoption_curve[1:step]
+
+  return(list(
+    final_size = sum(active),
+    adoption_curve = adoption_curve,
+    steps = step,
+    active_nodes = which(active)
+  ))
+}
+```
+
+## Linear Threshold Model (LTM)
+
+```{r ltm-implementation}
+simulate_ltm <- function(g, seeds, max_steps = 168) {
+  n <- vcount(g)
+
+  # Initialize states
+  active <- rep(FALSE, n)
+  active[seeds] <- TRUE
+
+  # Assign random thresholds
+  thresholds <- runif(n)
+
+  # Track adoption over time
+  adoption_curve <- numeric(max_steps)
+  adoption_curve[1] <- length(seeds)
+
+  step <- 1
+  changed <- TRUE
+
+  while (changed && step < max_steps) {
+    step <- step + 1
+    changed <- FALSE
+
+    # Check each inactive node
+    for (v in which(!active)) {
+      neighbors_v <- neighbors(g, v)
+      active_neighbors <- sum(active[neighbors_v])
+
+      # Weight: 1/degree(v)
+      if (length(neighbors_v) > 0) {
+        influence <- active_neighbors / length(neighbors_v)
+
+        if (influence >= thresholds[v]) {
+          active[v] <- TRUE
+          changed <- TRUE
+        }
+      }
+    }
+
+    adoption_curve[step] <- sum(active)
+  }
+
+  adoption_curve <- adoption_curve[1:step]
+
+  return(list(
+    final_size = sum(active),
+    adoption_curve = adoption_curve,
+    steps = step,
+    active_nodes = which(active)
+  ))
+}
+```
+
+## SIR Model
+
+```{r sir-implementation}
+simulate_sir <- function(g, seeds, beta = 0.05, gamma = 0.3, max_steps = 168) {
+  n <- vcount(g)
+  state <- rep(0, n)
+  state[seeds] <- 1 
+
+  # Track counts over time
+  S_curve <- numeric(max_steps)
+  I_curve <- numeric(max_steps)
+  R_curve <- numeric(max_steps)
+
+  S_curve[1] <- n - length(seeds)
+  I_curve[1] <- length(seeds)
+  R_curve[1] <- 0
+
+  step <- 1
+  prev_infected <- length(seeds)
+
+  while (sum(state == 1) > 0 && step < max_steps) {
+    step <- step + 1
+    new_state <- state
+
+    # Process infected nodes
+    infected <- which(state == 1)
+    for (u in infected) {
+      # Try to infect susceptible neighbors
+      neighbors_u <- neighbors(g, u)
+      susceptible_neighbors <- neighbors_u[state[neighbors_u] == 0]
+
+      for (v in susceptible_neighbors) {
+        if (runif(1) < beta) {
+          new_state[v] <- 1
+        }
+      }
+
+      # Try to recover
+      if (runif(1) < gamma) {
+        new_state[u] <- 2  # Recovered
+      }
+    }
+
+    state <- new_state
+    S_curve[step] <- sum(state == 0)
+    I_curve[step] <- sum(state == 1)
+    R_curve[step] <- sum(state == 2)
+
+    current_infected <- sum(state == 1)
+
+    # Stop if no more infected
+    if (current_infected == 0) break
+  }
+
+  S_curve <- S_curve[1:step]
+  I_curve <- I_curve[1:step]
+  R_curve <- R_curve[1:step]
+
+  return(list(
+    final_size = sum(state == 2), 
+    S_curve = S_curve,
+    I_curve = I_curve,
+    R_curve = R_curve,
+    adoption_curve = I_curve + R_curve,
+    steps = step
+  ))
+}
+```
+
+# Seeding Strategies
+
+## Define Seeding Functions
+
+```{r seeding-strategies}
+get_seeds <- function(g, k, strategy = "random") {
+  n <- vcount(g)
+
+  if (k > n) k <- n
+
+  seeds <- switch(strategy,
+    "random" = sample(1:n, k),
+    "degree" = order(degree(g), decreasing = TRUE)[1:k],
+    "betweenness" = order(betweenness(g), decreasing = TRUE)[1:k],
+    sample(1:n, k)  
+  )
+
+  return(seeds)
+}
+
+seeding_strategies <- c("random", "degree", "betweenness")
+```
+
+# Simulation Experiments
+
+## Run Diffusion Simulations
+
+```{r}
+n_simulations <- 10  # Monte Carlo runs
+seed_fraction <- 0.01  # 1% of nodes as seeds
+
+g_real <- networks[[main_network]]
+g_er <- er_networks[[main_network]]
+g_switch <- switching_networks[[main_network]]
+
+network_types <- list(
+  Real = g_real,
+  ER = g_er,
+  Switching = g_switch
+)
+
+run_single_simulation <- function(net_type_name, g, strategy, sim, k) {
+  # Load required library in each worker
+  library(igraph)
+
+  # Get seeds 
+  set.seed(42 + sim)
+
+  if (strategy == "random") {
+    seeds <- sample(1:vcount(g), k)
+  } else {
+    if (strategy == "degree") {
+      seeds <- order(degree(g), decreasing = TRUE)[1:k]
+    } else if (strategy == "betweenness") {
+      seeds <- order(betweenness(g), decreasing = TRUE)[1:k]
+    } else if (strategy == "eigenvector") {
+      ev <- eigen_centrality(g)$vector
+      seeds <- order(ev, decreasing = TRUE)[1:k]
+    }
+  }
+
+  simulate_icm_local <- function(g, seeds, p = 0.1, max_steps = 168) {
+    n <- vcount(g)
+    active <- rep(FALSE, n)
+    active[seeds] <- TRUE
+    newly_active <- seeds
+    adoption_curve <- numeric(max_steps)
+    adoption_curve[1] <- length(seeds)
+    step <- 1
+
+    while (length(newly_active) > 0 && step < max_steps) {
+      step <- step + 1
+      next_active <- c()
+
+      for (u in newly_active) {
+        neighbors <- neighbors(g, u)
+        inactive_neighbors <- neighbors[!active[neighbors]]
+
+        for (v in inactive_neighbors) {
+          if (runif(1) < p) {
+            active[v] <- TRUE
+            next_active <- c(next_active, v)
+          }
+        }
+      }
+
+      newly_active <- unique(next_active)
+      adoption_curve[step] <- sum(active)
+    }
+
+    list(final_size = sum(active), steps = step)
+  }
+
+  simulate_ltm_local <- function(g, seeds, max_steps = 168) {
+    n <- vcount(g)
+    active <- rep(FALSE, n)
+    active[seeds] <- TRUE
+    thresholds <- runif(n)
+    adoption_curve <- numeric(max_steps)
+    adoption_curve[1] <- length(seeds)
+    step <- 1
+    changed <- TRUE
+
+    while (changed && step < max_steps) {
+      step <- step + 1
+      changed <- FALSE
+
+      for (v in which(!active)) {
+        neighbors_v <- neighbors(g, v)
+        active_neighbors <- sum(active[neighbors_v])
+
+        if (length(neighbors_v) > 0) {
+          influence <- active_neighbors / length(neighbors_v)
+          if (influence >= thresholds[v]) {
+            active[v] <- TRUE
+            changed <- TRUE
+          }
+        }
+      }
+
+      adoption_curve[step] <- sum(active)
+    }
+
+    list(final_size = sum(active), steps = step)
+  }
+
+  simulate_sir_local <- function(g, seeds, beta = 0.05, gamma = 0.3, max_steps = 168) {
+    n <- vcount(g)
+    state <- rep(0, n)
+    state[seeds] <- 1
+    step <- 1
+
+    while (sum(state == 1) > 0 && step < max_steps) {
+      step <- step + 1
+      new_state <- state
+      infected <- which(state == 1)
+
+      for (u in infected) {
+        neighbors_u <- neighbors(g, u)
+        susceptible_neighbors <- neighbors_u[state[neighbors_u] == 0]
+
+        for (v in susceptible_neighbors) {
+          if (runif(1) < beta) {
+            new_state[v] <- 1
+          }
+        }
+
+        # Try to recover
+        if (runif(1) < gamma) {
+          new_state[u] <- 2  # Recovered
+        }
+      }
+
+      state <- new_state
+      current_infected <- sum(state == 1)
+
+      if (current_infected == 0) break
+    }
+
+    list(final_size = sum(state == 2), steps = step)
+  }
+
+  # Run simulations
+  icm_result <- simulate_icm_local(g, seeds, p = 0.1)
+  ltm_result <- simulate_ltm_local(g, seeds)
+  sir_result <- simulate_sir_local(g, seeds, beta = 0.05, gamma = 0.3)
+
+  # Return results
+  data.frame(
+    NetworkType = net_type_name,
+    NetworkName = main_network,
+    Strategy = strategy,
+    Simulation = sim,
+    Nodes = vcount(g),
+    Seeds = k,
+    ICM_FinalSize = icm_result$final_size,
+    ICM_Steps = icm_result$steps,
+    LTM_FinalSize = ltm_result$final_size,
+    LTM_Steps = ltm_result$steps,
+    SIR_FinalSize = sir_result$final_size,
+    SIR_Steps = sir_result$steps
+  )
+}
+
+# Prepare all simulation tasks
+simulation_tasks <- list()
+task_id <- 1
+
+n <- vcount(g_real)
+k <- max(1, round(n * seed_fraction))
+
+for (net_type_name in names(network_types)) {
+  for (strategy in seeding_strategies) {
+    for (sim in 1:n_simulations) {
+      simulation_tasks[[task_id]] <- list(
+        net_type_name = net_type_name,
+        strategy = strategy,
+        sim = sim,
+        k = k
+      )
+      task_id <- task_id + 1
+    }
+  }
+}
+
+
+all_results <- foreach(
+  task = simulation_tasks,
+  .combine = rbind,
+  .packages = c("igraph"),
+  .export = c("run_single_simulation", "main_network", "network_types")
+) %dopar% {
+  # Get graph from network_types by name (exported to workers)
+  g <- network_types[[task$net_type_name]]
+
+  run_single_simulation(
+    task$net_type_name,
+    g,
+    task$strategy,
+    task$sim,
+    task$k
+  )
+}
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+summary_results <- all_results %>%
+  group_by(NetworkType, NetworkName, Strategy) %>%
+  summarise(
+    ICM_AvgSize = mean(ICM_FinalSize),
+    ICM_SdSize = sd(ICM_FinalSize),
+    ICM_AvgSteps = mean(ICM_Steps),
+    LTM_AvgSize = mean(LTM_FinalSize),
+    LTM_SdSize = sd(LTM_FinalSize),
+    LTM_AvgSteps = mean(LTM_Steps),
+    SIR_AvgSize = mean(SIR_FinalSize),
+    SIR_SdSize = sd(SIR_FinalSize),
+    SIR_AvgSteps = mean(SIR_Steps),
+    .groups = "drop"
+  )
+
+kable(summary_results, digits = 2,
+      caption = "Summary of Diffusion Simulation Results")
+```
+
+# Results Visualization
+
+## Final Cascade Size by Model and Strategy
+
+```{r plot-cascade-size}
+output_dir <- "plots"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+plot_data <- all_results %>%
+  pivot_longer(
+    cols = c(ICM_FinalSize, LTM_FinalSize, SIR_FinalSize),
+    names_to = "Model",
+    values_to = "FinalSize"
+  ) %>%
+  mutate(
+    Model = gsub("_FinalSize", "", Model),
+    FinalSizePct = FinalSize / Nodes * 100
+  )
+
+models <- c("ICM", "LTM", "SIR")
+colors <- c("ICM" = "#66C2A5", "LTM" = "#FC8D62", "SIR" = "#8DA0CB")
+
+for(model in models) {
+  plot_data_filtered <- plot_data %>% filter(Model == model)
+  
+  p <- ggplot(plot_data_filtered, aes(x = Strategy, y = FinalSizePct, fill = Strategy)) +
+    geom_boxplot() +
+    facet_wrap(~ NetworkType, ncol = 3) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = paste(model, "Model - Final Cascade Size by Strategy -", main_network),
+      y = "Final Adoption (%)",
+      x = "Seeding Strategy"
+    ) +
+    scale_fill_brewer(palette = "Set2")
+  
+  ggsave(
+    filename = file.path(output_dir, paste0(model, "_cascade_size_", main_network, ".png")),
+    plot = p,
+    width = 12,
+    height = 4,
+    dpi = 300
+  )
+  
+  print(paste("Saved:", model, "plot"))
+}
+```
+
+## Diffusion speed comparison
+
+```{r}
+speed_output_dir <- "speed_plots"
+if (!dir.exists(speed_output_dir)) {
+  dir.create(speed_output_dir)
+}
+
+speed_data <- all_results %>%
+  pivot_longer(
+    cols = c(ICM_Steps, LTM_Steps, SIR_Steps),
+    names_to = "Model",
+    values_to = "Steps"
+  ) %>%
+  mutate(Model = gsub("_Steps", "", Model))
+
+models <- c("ICM", "LTM", "SIR")
+
+for(model in models) {
+  speed_data_filtered <- speed_data %>% filter(Model == model)
+  
+  p <- ggplot(speed_data_filtered, aes(x = Strategy, y = Steps, fill = Strategy)) +
+    geom_boxplot() +
+    facet_wrap(~ NetworkType, ncol = 3) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = paste(model, "Model - Diffusion Speed by Strategy -", main_network),
+      y = "Time Steps to Completion",
+      x = "Seeding Strategy"
+    ) +
+    scale_fill_brewer(palette = "Set2")
+  
+  ggsave(
+    filename = file.path(speed_output_dir, paste0(model, "_diffusion_speed_", main_network, ".png")),
+    plot = p,
+    width = 12,
+    height = 4,
+    dpi = 300
+  )
+  
+  print(paste("Saved:", model, "speed plot"))
+}
+
+```
+
+# Hypothesis Testing
+
+## Hypothesis 1: Real vs Random Networks
+
+```{r hypothesis1}
+h1_data <- all_results %>%
+  select(NetworkType, NetworkName, Strategy, Simulation,
+         ICM_Steps, LTM_Steps, SIR_Steps)
+
+cat("\n=== ICM Model ===\n")
+real_icm <- h1_data %>% filter(NetworkType == "Real") %>% pull(ICM_Steps)
+er_icm <- h1_data %>% filter(NetworkType == "ER") %>% pull(ICM_Steps)
+switch_icm <- h1_data %>% filter(NetworkType == "Switching") %>% pull(ICM_Steps)
+
+cat("\nReal vs ER:\n")
+t_test_1 <- t.test(real_icm, er_icm)
+print(t_test_1)
+
+cat("\nReal vs Switching:\n")
+t_test_2 <- t.test(real_icm, switch_icm)
+print(t_test_2)
+
+cat("\n=== LTM Model ===\n")
+real_ltm <- h1_data %>% filter(NetworkType == "Real") %>% pull(LTM_Steps)
+er_ltm <- h1_data %>% filter(NetworkType == "ER") %>% pull(LTM_Steps)
+switch_ltm <- h1_data %>% filter(NetworkType == "Switching") %>% pull(LTM_Steps)
+
+cat("\nReal vs ER:\n")
+t_test_3 <- t.test(real_ltm, er_ltm)
+print(t_test_3)
+
+cat("\nReal vs Switching:\n")
+t_test_4 <- t.test(real_ltm, switch_ltm)
+print(t_test_4)
+
+cat("\n=== SIR Model ===\n")
+real_sir <- h1_data %>% filter(NetworkType == "Real") %>% pull(SIR_Steps)
+er_sir <- h1_data %>% filter(NetworkType == "ER") %>% pull(SIR_Steps)
+switch_sir <- h1_data %>% filter(NetworkType == "Switching") %>% pull(SIR_Steps)
+
+cat("\nReal vs ER:\n")
+t_test_5 <- t.test(real_sir, er_sir)
+print(t_test_5)
+
+cat("\nReal vs Switching:\n")
+t_test_6 <- t.test(real_sir, switch_sir)
+print(t_test_6)
+
+h1_plot_data <- h1_data %>%
+  pivot_longer(
+    cols = c(ICM_Steps, LTM_Steps, SIR_Steps),
+    names_to = "Model",
+    values_to = "Steps"
+  ) %>%
+  mutate(Model = gsub("_Steps", "", Model))
+
+h1_plot <- ggplot(h1_plot_data, aes(x = NetworkType, y = Steps, fill = NetworkType)) +
+  geom_boxplot() +
+  facet_wrap(~ Model) +
+  theme_minimal() +
+  labs(
+    title = paste("Hypothesis 1: Diffusion Speed - Real vs Random Networks -", main_network),
+    y = "Time Steps",
+    x = "Network Type"
+  ) +
+  scale_fill_brewer(palette = "Pastel2")
+
+# Save plot
+ggsave(
+  filename = paste0("H1_diffusion_speed_", main_network, ".png"),
+  plot = h1_plot,
+  width = 12,
+  height = 4,
+  dpi = 300
+)
+
+cat("\nPlot saved as:", paste0("H1_diffusion_speed_", main_network, ".png\n"))
+```
+
+## Hypothesis 2: Seeding Strategy Effect
+
+```{r hypothesis2}
+# Compare different seeding strategies
+h2_data <- all_results %>%
+  filter(NetworkType == "Real") %>%
+  select(Strategy, ICM_Steps, LTM_Steps, SIR_Steps)
+
+# ANOVA for ICM
+cat("\n=== ANOVA: Seeding Strategy Effect on ICM Speed ===\n")
+anova_icm <- aov(ICM_Steps ~ Strategy, data = h2_data)
+summary(anova_icm)
+
+# ANOVA for LTM
+cat("\n=== ANOVA: Seeding Strategy Effect on LTM Speed ===\n")
+anova_ltm <- aov(LTM_Steps ~ Strategy, data = h2_data)
+summary(anova_ltm)
+
+# ANOVA for SIR
+cat("\n=== ANOVA: Seeding Strategy Effect on SIR Speed ===\n")
+anova_sir <- aov(SIR_Steps ~ Strategy, data = h2_data)
+summary(anova_sir)
+cat("\nPost-hoc Tukey HSD:\n")
+tukey_sir <- TukeyHSD(anova_sir)
+print(tukey_sir)
+
+# Visualization
+h2_plot_data <- h2_data %>%
+  pivot_longer(
+    cols = c(ICM_Steps, LTM_Steps, SIR_Steps),
+    names_to = "Model",
+    values_to = "Steps"
+  ) %>%
+  mutate(Model = gsub("_Steps", "", Model))
+
+# Create plot
+h2_plot <- ggplot(h2_plot_data, aes(x = Strategy, y = Steps, fill = Strategy)) +
+  geom_boxplot() +
+  facet_wrap(~ Model) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = paste("Hypothesis 2: Effect of Seeding Strategy on Diffusion Speed -", main_network),
+    y = "Time Steps",
+    x = "Seeding Strategy"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+# Display plot
+print(h2_plot)
+
+# Save plot
+ggsave(
+  filename = paste0("H2_seeding_strategy_speed_", main_network, ".png"),
+  plot = h2_plot,
+  width = 12,
+  height = 4,
+  dpi = 300
+)
+
+cat("\nPlot saved as:", paste0("H2_seeding_strategy_speed_", main_network, ".png\n"))
+
+h2_size_data <- all_results %>%
+  filter(NetworkType == "Real") %>%
+  select(Strategy, ICM_FinalSize, LTM_FinalSize, SIR_FinalSize)
+
+anova_icm_size <- aov(ICM_FinalSize ~ Strategy, data = h2_size_data)
+summary(anova_icm_size)
+
+anova_ltm_size <- aov(LTM_FinalSize ~ Strategy, data = h2_size_data)
+summary(anova_ltm_size)
+
+anova_sir_size <- aov(SIR_FinalSize ~ Strategy, data = h2_size_data)
+summary(anova_sir_size)
+```
+
+## Hypothesis 3: Diffusion Model Effect
+
+```{r hypothesis3}
+h3_data <- all_results %>%
+  filter(NetworkType == "Real", Strategy == "degree") %>%
+  select(NetworkName, Simulation, ICM_FinalSize, LTM_FinalSize, SIR_FinalSize)
+
+h3_size <- h3_data %>%
+  select(NetworkName, Simulation, ICM_FinalSize, LTM_FinalSize, SIR_FinalSize) %>%
+  pivot_longer(
+    cols = c(ICM_FinalSize, LTM_FinalSize, SIR_FinalSize),
+    names_to = "Model",
+    values_to = "FinalSize"
+  ) %>%
+  mutate(Model = gsub("_FinalSize", "", Model))
+
+cat("\n=== ANOVA: Model Effect on Final Reach ===\n")
+anova_size <- aov(FinalSize ~ Model, data = h3_size)
+summary(anova_size)
+
+tukey_size <- TukeyHSD(anova_size)
+print(tukey_size)
+
+# Visualization
+h3_plot <- ggplot(h3_size, aes(x = Model, y = FinalSize, fill = Model)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    title = paste("Model Effect on Final Cascade Reach -", main_network),
+    y = "Final Size (nodes)",
+    x = "Diffusion Model"
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme(legend.position = "none")
+
+# Display plot
+print(h3_plot)
+
+# Save plot
+ggsave(
+  filename = paste0("H3_model_effect_final_size_", main_network, ".png"),
+  plot = h3_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+## Example Diffusion Curves
+
+```{r}
+# Create output directory for dynamics plots
+dynamics_dir <- "dynamics_plots"
+if (!dir.exists(dynamics_dir)) {
+  dir.create(dynamics_dir)
+}
+
+g <- networks[[main_network]]
+k <- max(1, round(vcount(g) * 0.01))
+seeds_deg <- get_seeds(g, k, "degree")
+
+# Run models
+icm_ex <- simulate_icm(g, seeds_deg, p = 0.1)
+ltm_ex <- simulate_ltm(g, seeds_deg)
+sir_ex <- simulate_sir(g, seeds_deg, beta = 0.05, gamma = 0.3)
+
+# Prepare data for plotting
+max_steps <- max(length(icm_ex$adoption_curve),
+                 length(ltm_ex$adoption_curve),
+                 length(sir_ex$adoption_curve))
+
+curve_data <- data.frame(
+  Step = 1:max_steps,
+  ICM = c(icm_ex$adoption_curve, rep(NA, max_steps - length(icm_ex$adoption_curve))),
+  LTM = c(ltm_ex$adoption_curve, rep(NA, max_steps - length(ltm_ex$adoption_curve))),
+  SIR = c(sir_ex$adoption_curve, rep(NA, max_steps - length(sir_ex$adoption_curve)))
+) %>%
+  pivot_longer(cols = c(ICM, LTM, SIR), names_to = "Model", values_to = "Adopted")
+
+p_dynamics <- ggplot(curve_data, aes(x = Step, y = Adopted, color = Model, linetype = Model)) +
+  geom_line(size = 1.5, na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE, alpha = 0.6) + 
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = paste("Diffusion Dynamics Comparison -", main_network),
+    subtitle = paste("Initial seeds:", k, "nodes (1%) - Degree strategy"),
+    x = "Time Step",
+    y = "Cumulative Adopted Nodes",
+    color = "Model",
+    linetype = "Model"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  scale_y_continuous(
+    sec.axis = sec_axis(~./vcount(g)*100, name = "Adoption Rate (%)")  
+  )
+
+# Display and save
+print(p_dynamics)
+ggsave(
+  filename = file.path(dynamics_dir, paste0("diffusion_dynamics_", main_network, ".png")),
+  plot = p_dynamics,
+  width = 12,
+  height = 7,
+  dpi = 300
+)
+sir_detailed <- data.frame(
+  Step = 1:length(sir_ex$S_curve),
+  Susceptible = sir_ex$S_curve,
+  Infected = sir_ex$I_curve,
+  Recovered = sir_ex$R_curve
+) %>%
+  pivot_longer(cols = c(Susceptible, Infected, Recovered),
+               names_to = "State", values_to = "Count")
+
+peak_step <- which.max(sir_ex$I_curve)
+peak_infected <- max(sir_ex$I_curve)
+
+p_sir <- ggplot(sir_detailed, aes(x = Step, y = Count, color = State, fill = State)) +
+  geom_area(alpha = 0.3, position = "identity") +  
+  geom_line(size = 1.5) +
+  geom_vline(xintercept = peak_step, linetype = "dashed", color = "red", alpha = 0.5) + 
+  annotate("text", x = peak_step, y = peak_infected, 
+           label = paste("Peak:", peak_infected, "infected"), 
+           vjust = -1, size = 3.5) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = paste("SIR Model Compartmental Dynamics -", main_network),
+    subtitle = paste("β =", 0.05, "| γ =", 0.3, "| Seeds:", k, "nodes"),
+    x = "Time Step",
+    y = "Number of Nodes",
+    color = "Compartment",
+    fill = "Compartment"
+  ) +
+  scale_color_manual(values = c("Susceptible" = "#3498db",
+                                  "Infected" = "#e74c3c",
+                                  "Recovered" = "#2ecc71")) +
+  scale_fill_manual(values = c("Susceptible" = "#3498db",
+                                 "Infected" = "#e74c3c",
+                                 "Recovered" = "#2ecc71"))
+
+# Display and save
+print(p_sir)
+ggsave(
+  filename = file.path(dynamics_dir, paste0("SIR_detailed_dynamics_", main_network, ".png")),
+  plot = p_sir,
+  width = 12,
+  height = 7,
+  dpi = 300
+)
+
+```
+
+# Key Findings and Insights
+
+## Performance Summary
+
+```{r}
+tables_dir <- "summary_tables"
+if (!dir.exists(tables_dir)) {
+  dir.create(tables_dir)
+}
+models <- c("ICM", "LTM", "SIR")
+
+for(model in models) {
+  size_col <- paste0(model, "_AvgSize")
+  steps_col <- paste0(model, "_AvgSteps")
+  
+  best_performers <- summary_results %>%
+    group_by(NetworkType, NetworkName) %>%
+    arrange(desc(.data[[size_col]])) %>%
+    slice(1) %>%
+    select(NetworkType, NetworkName, Strategy, all_of(size_col), all_of(steps_col))
+  
+  cat("\nBest Performing Combinations for", model, "Model:\n")
+  print(kable(best_performers, digits = 2))
+  
+  write.csv(best_performers, 
+            file = file.path(tables_dir, paste0("best_performers_", model, "_", main_network, ".csv")),
+            row.names = FALSE)
+  
+  cat("Saved:", paste0("best_performers_", model, "_", main_network, ".csv\n"))
+}
+
+cat("\nAll best performer tables saved in", tables_dir, "\n")
+```
+
+
+## Data Export
+
+```{r}
+# Save results for further analysis
+write.csv(all_results, "diffusion_simulation_results.csv", row.names = FALSE)
+write.csv(summary_results, "diffusion_summary_statistics.csv", row.names = FALSE)
+write.csv(network_stats, "network_statistics.csv", row.names = FALSE)
+
+cat("Results exported successfully!\n")
+cat("- diffusion_simulation_results.csv\n")
+cat("- diffusion_summary_statistics.csv\n")
+cat("- network_statistics.csv\n")
+```
+
+## Cleanup
+
+```{r cleanup}
+# Stop parallel cluster
+stopCluster(cl)
+```
